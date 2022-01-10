@@ -1,0 +1,1139 @@
+﻿Imports System.Data
+Imports System.Data.SqlClient
+Imports System.Configuration
+Imports System.Collections.Generic
+Imports System.IO
+Imports System.Net.Mail
+Imports System.Security
+Imports System.Web
+Imports System.Web.Security
+Imports System.Web.UI
+Imports System.Web.UI.WebControls
+Imports System.Web.UI.WebControls.WebParts
+Imports System.Web.UI.HtmlControls
+Imports System.Drawing
+Partial Class EquipmentMove
+    Inherits System.Web.UI.Page
+
+    'variables to hold lists of names for auto-complete element RequestedBy
+    Shared staff_names As New List(Of String)()
+    Shared staff_uins As New List(Of String)()
+
+    'variables to hold information on person who submitted form
+    Shared RequestorUsername As String = ""
+    Shared RequestorEmail As String = ""
+    Shared RequestorUIN As String = ""
+    Shared RequestorFullName As String = ""
+    Shared RequestorEmpId As Integer = 0
+
+    Shared ptag_list As New List(Of String)
+    Shared ptag_descriptions As New List(Of String)
+
+    'variables to hold record info when form is submitted
+    Shared SurveyName As String
+    Shared Requestor As String
+    Shared PhoneNumber As String
+    Shared FromBuilding As String
+    Shared FromBuildingID As String
+    Shared FromRoom As String
+    Shared CompletionDt As String
+    Shared dt As New DataTable
+    Shared ddlType As New DropDownList
+    Shared ddlTypelist As New List(Of String)({"--Select Type--", "Move/Transfer", "Trash/Surplus"})
+    Shared ddlBuildings As New DropDownList
+    Shared Custodian As String
+    Shared SerialNumber As String
+    Shared NotesText As String
+    Shared FoundRowBlanks As Boolean = False
+    Shared FocusRowIndex As Integer
+
+    Protected Sub Page_Load(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles Me.Load
+
+        'set up default dates for calendar - on non-submission (first load),
+        'set dates to current day. If form is being previewed, default
+        'to what was entered by user
+        If Not (IsPostBack) Then
+            ptag_list.Clear()
+            ptag_descriptions.Clear()
+            PTagMissing.Text = ""
+            PTagMissing.CssClass = ""
+
+            CompletionDateExtender.SelectedDate = Date.Today
+
+            LoadTable(sender, e)
+
+
+        Else
+            CompletionDateExtender.SelectedDate = CompletionDate.Text
+            getData(sender, e)
+
+        End If
+
+        'populate building field from database
+        If Not Me.IsPostBack Then
+            Dim ddlToBuilding = CType(RequestGrid.Rows(0).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+
+            PRIForms.PopulateBuildingList(ddlFromBuilding)
+            PRIForms.PopulateBuildingList(ddlToBuilding)
+            ddlFromBuilding.Items.Insert(1, New ListItem("Trash/Surplus", "1"))
+            ddlToBuilding.Items.Insert(1, New ListItem("Trash/Surplus", "1"))
+        End If
+
+        If IsPostBack Then
+            Dim CtrlID As String = String.Empty
+            If Request.Form("__EVENTTARGET") IsNot Nothing And
+                Request.Form("__EVENTTARGET") <> String.Empty Then
+                CtrlID = Request.Form("__EVENTTARGET")
+                Me.SetFocus(CtrlID)
+            End If
+            If CtrlID.StartsWith("RequestGrid") Then
+                Dim RowIndex As Integer = RequestGrid.Rows.Count - 1
+                If CtrlID.EndsWith("MoveType") Then
+                    Dim FocusControl As DropDownList = RequestGrid.Rows(RowIndex).FindControl("ddlMoveType")
+                    SetFocus(FocusControl)
+                End If
+                If CtrlID.EndsWith("Custodian") Then
+                    Dim FocusControl As TextBox = RequestGrid.Rows(RowIndex).FindControl("PTag")
+                    SetFocus(FocusControl)
+                End If
+            End If
+        End If
+
+
+        'If Page.IsPostBack Then
+        '    Dim targetId As String = Page.Request.Params.Get("__EVENTTARGET")
+        '    Page.ClientScript.RegisterStartupScript(Me.GetType, "focusthis", ("document.getElementById('" _
+        '                    + (targetId + "').focus()")), True)
+        'End If
+
+    End Sub
+
+    Protected Sub Restart_Click(ByVal sender As Object, ByVal e As EventArgs) Handles RestartButton.Click
+        Response.Redirect("EquipmentMove.aspx")
+
+    End Sub
+
+    Protected Sub ReturnToIntranet_Click(ByVal sender As Object, ByVal e As EventArgs) Handles ReturnToIntranet.Click
+        Response.Redirect("https://staff-prairie.web.illinois.edu/")
+
+    End Sub
+
+    'In partnership with txt_RequestorName_TextChanged function, auto-completes requestor box
+    <System.Web.Script.Services.ScriptMethod()>
+    <System.Web.Services.WebMethod()>
+    Public Shared Function GetNames(ByVal prefixText As String, ByVal count As Integer) As List(Of String)
+
+        'The connection info for for connecting to the database where the staff names are
+        Try
+            Return PRIForms.GetNames(prefixText, count)
+
+        Catch ex As Exception
+            MsgBox("Error: Unable to populate users drop down. " & ex.ToString())
+        End Try
+
+
+    End Function
+
+    'In partnership with getnames, autocompletes requestor box
+    Public Sub StaffAutocomplete_TextChanged(sender As Object, e As EventArgs) 'Handles txt_RequestorName.TextChanged
+        Try
+            Dim txt_RequestorName_cb As TextBox
+            txt_RequestorName_cb = TryCast(FindControl("RequestedBy"), TextBox)
+            Dim staff_uin_lbl As Label = TryCast(FindControl("lbl_RequestorUIN"), Label)
+
+            Dim txtbox_list As New List(Of TextBox)
+            txtbox_list.Add(txt_RequestorName_cb)
+
+            'Called function is in PRIForms, globally accessible to all forms in this site
+            PRIForms.StaffAutocomplete_TextChanged(sender, e, txtbox_list, staff_uin_lbl)
+
+        Catch ex As Exception
+            System.Diagnostics.Debug.Print("Error acquiring Staff Requestor UIN: " & ex.ToString())
+        End Try
+
+    End Sub
+
+    Public Sub CustodianAutocomplete_TextChanged(sender As Object, e As EventArgs) 'Handles txt_RequestorName.TextChanged
+        Try
+            Dim CustodianControl As TextBox = TryCast(FindControl("Custodian"), TextBox)
+            Dim staff_uin_lbl As Label = TryCast(FindControl("lbl_RequestorUIN"), Label)
+
+            Dim txtbox_list As New List(Of TextBox)
+            txtbox_list.Add(CustodianControl)
+
+            'Called function is in PRIForms, globally accessible to all forms in this site
+            PRIForms.StaffAutocomplete_TextChanged(sender, e, txtbox_list, staff_uin_lbl)
+
+        Catch ex As Exception
+            System.Diagnostics.Debug.Print("Error acquiring Staff Requestor UIN: " & ex.ToString())
+        End Try
+
+    End Sub
+
+    'saves entered contents into datatable in view state, so it will 
+    'persist through post-back
+    Protected Sub SavePreviousData()
+
+        'will be used to count rows
+        Dim rowindex As Integer = 0
+
+        'only do this if we have something in the viewstate for this table
+        If ViewState("CurrentTable") IsNot Nothing Then
+            'cast the viewstate element as a datatable and put in
+            'global datatable variable
+            Dim dt As DataTable = TryCast(ViewState("CurrentTable"), DataTable)
+            'only to this if there are rows in the datatable
+            If dt.Rows.Count > 0 Then
+
+                'for every row in the table we pulled from the view state, 
+                'extract the values entered in the textboxes and put their values into the 
+                'datatable textboxes and dropdownlist. The controls are named in the aspx code
+                For i As Integer = 1 To dt.Rows.Count - 1
+                    'extract the control values
+                    Dim MoveDDL As DropDownList = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("ddlMoveType"), DropDownList)
+                    Dim BuildingDDL As DropDownList = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+                    Dim RoomBox As TextBox = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("RoomNumber"), TextBox)
+                    Dim Custodian As TextBox = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("Custodian"), TextBox)
+                    Dim PTagBox As TextBox = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("PTag"), TextBox)
+                    Dim SerialBox As TextBox = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("SerialNumber"), TextBox)
+                    Dim DescriptionBox As TextBox = CType(RequestGrid.Rows(rowindex).Cells(1).FindControl("Description"), TextBox)
+
+                    'store the values in the datatable
+                    MoveDDL.SelectedValue = dt.Rows(i).Item("MoveType")
+                    BuildingDDL.SelectedValue = dt.Rows(i).Item("ToBuilding")
+                    RoomBox.Text = dt.Rows(i).Item("ToRoom").ToString()
+                    Custodian.Text = dt.Rows(i).Item("Custodian").ToString
+                    PTagBox.Text = dt.Rows(i).Item("PTag").ToString()
+                    SerialBox.Text = dt.Rows(i).Item("SerialNumber").ToString()
+                    DescriptionBox.Text = dt.Rows(i).Item("Description").ToString()
+
+                    MoveDDL.Enabled = False
+                    MoveDDL.BackColor = Color.MintCream
+                    MoveDDL.ForeColor = Color.Green
+                    MoveDDL.BorderColor = Color.Green
+                    MoveDDL.BorderStyle = BorderStyle.Solid
+                    MoveDDL.BorderWidth = 1
+                    BuildingDDL.Enabled = False
+                    BuildingDDL.BackColor = Color.MintCream
+                    BuildingDDL.ForeColor = Color.Green
+                    BuildingDDL.BorderColor = Color.Green
+                    BuildingDDL.BorderStyle = BorderStyle.Solid
+                    BuildingDDL.BorderWidth = 1
+                    RoomBox.Enabled = False
+                    RoomBox.BackColor = Color.MintCream
+                    RoomBox.ForeColor = Color.Green
+                    RoomBox.BorderColor = Color.Green
+                    RoomBox.BorderStyle = BorderStyle.Solid
+                    RoomBox.BorderWidth = 1
+                    Custodian.Enabled = False
+                    Custodian.BackColor = Color.MintCream
+                    Custodian.ForeColor = Color.Green
+                    Custodian.BorderColor = Color.Green
+                    Custodian.BorderStyle = BorderStyle.Solid
+                    Custodian.BorderWidth = 1
+                    PTagBox.Enabled = False
+                    PTagBox.BackColor = Color.MintCream
+                    PTagBox.ForeColor = Color.Green
+                    PTagBox.BorderColor = Color.Green
+                    PTagBox.BorderStyle = BorderStyle.Solid
+                    PTagBox.BorderWidth = 1
+                    SerialBox.Enabled = False
+                    SerialBox.BackColor = Color.MintCream
+                    SerialBox.ForeColor = Color.Green
+                    SerialBox.BorderColor = Color.Green
+                    SerialBox.BorderStyle = BorderStyle.Solid
+                    SerialBox.BorderWidth = 1
+                    DescriptionBox.Enabled = False
+                    DescriptionBox.BackColor = Color.MintCream
+                    DescriptionBox.ForeColor = Color.Green
+                    DescriptionBox.BorderColor = Color.Green
+                    DescriptionBox.BorderStyle = BorderStyle.Solid
+                    DescriptionBox.BorderWidth = 1
+
+                    rowindex = rowindex + 1
+                Next
+
+                'store the datatable in the view state to persist through postback
+                ViewState("CurrentTable") = dt
+            End If
+
+        Else
+            Response.Write("RequestGrid viewstate Is null Integer SetPreviousData()")
+
+        End If
+
+        ViewState("CurrentTable") = dt
+    End Sub
+
+    Protected Sub AddItem_Button(ByVal sender As Object, ByVal e As EventArgs) Handles AddItemButton.Click
+
+        Dim rowIndex As Integer = 0
+        'only do this if we have something in the viewstate for this table
+        If ViewState("CurrentTable") IsNot Nothing Then
+
+            Dim dr As DataRow
+            Dim dtCurrentTable As New DataTable()
+            'will be used to count rows
+
+            dtCurrentTable = TryCast(ViewState("CurrentTable"), DataTable)
+
+            'only do this if there are rows in the datatable already
+            If dtCurrentTable.Rows.Count > 0 Then
+
+                'for every row in the table we pulled from the view state, 
+                'extract the values entered in the textboxes and put their values into the 
+                'datatable controls. The controls are named in the aspx code
+
+                For i As Integer = 1 To dtCurrentTable.Rows.Count
+
+                    'extract the control values
+                    Dim MoveDDL As DropDownList = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("ddlMoveType"), DropDownList)
+                    Dim BuildingDDL As DropDownList = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+                    Dim RoomBox As TextBox = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("RoomNumber"), TextBox)
+                    Dim CustodianBox As TextBox = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("Custodian"), TextBox)
+                    Dim PTagBox As TextBox = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("PTag"), TextBox)
+                    Dim SerialBox As TextBox = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("SerialNumber"), TextBox)
+                    Dim DescriptionBox As TextBox = CType(RequestGrid.Rows(rowIndex).Cells(1).FindControl("Description"), TextBox)
+
+                    dr = dtCurrentTable.NewRow
+                    'store the values in the datatable
+                    dr("Row") = 1
+                    dr("MoveType") = MoveDDL.SelectedValue
+                    dr("ToBuilding") = BuildingDDL.SelectedValue
+                    dr("BuildingID") = BuildingDDL.SelectedValue
+                    dr("ToRoom") = RoomBox.Text
+                    dr("PTag") = PTagBox.Text
+                    dr("SerialNumber") = SerialBox.Text
+                    dr("Description") = DescriptionBox.Text
+                    dr("Custodian") = CustodianBox.Text
+
+                    rowIndex = rowIndex + 1
+
+                    'add the row to the datatable
+
+                Next
+                dt.Rows.Add(dr)
+                'add datatable to viewstate so it will persist through postback
+                ViewState("CurrentTable") = dt
+
+                'bind datatable to gridview as datasource
+                'this puts everything we have stored in the table so far onto the screen
+                'also adds new row (is that just a feature of datagrid?)
+                RequestGrid.DataSource = dt
+                RequestGrid.DataBind()
+
+                'populate dropdown list with choices from ddl_list.
+                'need to do for every single row in the table.
+                For i As Integer = 0 To dt.Rows.Count - 1
+                    ddlType = CType(RequestGrid.Rows(i).Cells(1).FindControl("ddlMoveType"), DropDownList)
+                    ddlType.DataSource = ddlTypelist
+                    ddlType.DataBind()
+
+                    ddlBuildings = CType(RequestGrid.Rows(i).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+                    PRIForms.PopulateBuildingList(ddlBuildings)
+                    ddlBuildings.Items.Insert(1, New ListItem("Trash/Surplus", "1"))
+
+                Next
+
+                Dim FocusControl As DropDownList = RequestGrid.Rows(rowIndex).FindControl("ddlMoveType")
+                SetFocus(FocusControl)
+
+            Else
+                LoadTable(sender, e)
+            End If
+
+        Else
+            Response.Write("RequestGrid viewstate Is null In Add_Button")
+
+        End If
+
+        'Save previous data so we will have it on post back
+        SavePreviousData()
+
+
+        PTagMissing.Text = ""
+        PTagMissing.CssClass = ""
+
+
+
+    End Sub
+
+    'In partnership with PTag_TextChanged function, auto-completes requestor box
+    <System.Web.Script.Services.ScriptMethod()>
+    <System.Web.Services.WebMethod()>
+    Public Shared Function GetPTag(ByVal prefixText As String, ByVal count As Integer) As List(Of String)
+
+        ptag_list.Clear()
+        ptag_descriptions.Clear()
+
+        'The connection info for for connecting to the database where the Ptag names are
+        Try
+
+            Dim RequestorConnStr As String = ConfigurationManager.ConnectionStrings("DatastormConnStr").ConnectionString
+            Dim ReqConn As New SqlConnection(RequestorConnStr)
+            Dim cmd As New SqlCommand
+            Dim dataReader As SqlDataReader
+            Dim ptag As String = ""
+
+
+            ReqConn.Open()
+
+            'Description column name is spelled wrong in the table, so it is also spelled wrong here.
+            Dim sql_get_ptag_description As String = "Select PTagPerm, Desciption from Forms.PRIFixedAssets_EDW_Equipment where" & " PTagPerm Like '" & prefixText & "%';"
+
+            cmd = New SqlCommand(sql_get_ptag_description, ReqConn)
+            dataReader = cmd.ExecuteReader()
+
+            'add all items returned from the database to the autocomplete element
+            While dataReader.Read()
+                ptag = dataReader.Item(0)
+                ptag_list.Add(dataReader.Item(0))
+                ptag_descriptions.Add(dataReader.Item(1))
+            End While
+            dataReader.Close()
+            cmd.Dispose()
+
+            Return ptag_list
+
+        Catch ex As Exception
+            MsgBox("Error: Unable to populate ptag drop down. " & ex.ToString())
+        End Try
+    End Function
+
+    Protected Sub PTag_TextChanged(ByVal sender As Object, ByVal e As EventArgs)
+        Try
+
+            Dim RowIndex As Integer
+            Dim PTagTB As TextBox = sender
+            Dim row As GridViewRow = PTagTB.Parent.Parent
+            RowIndex = row.RowIndex
+
+            Dim DescriptionTB = CType(RequestGrid.Rows(RowIndex).FindControl("Description"), TextBox)
+
+            Dim PTagText As String = PTagTB.Text()
+
+            Dim PTagIndex As Integer
+
+            If PTagText <> Nothing And PTagText <> "" Then
+                PTagIndex = ptag_list.IndexOf(PTagText)
+                PTagMissing.Text = ""
+                PTagMissing.CssClass = ""
+                Response.Write("ptag index set")
+                If PTagIndex >= 0 Then
+                    If ptag_list(PTagIndex) <> Nothing And ptag_list(PTagIndex) <> "" Then
+                        PTagTB.Text = ptag_list(PTagIndex)
+                        DescriptionTB.Text = ptag_descriptions(PTagIndex)
+                        DescriptionTB.Enabled = False
+                        DescriptionTB.BackColor = Color.LightGray
+                        DescriptionTB.ForeColor = Color.Black
+                    End If
+                Else
+                    PTagMissing.Text = "PTag not found. If you are sure you have entered it correctly, provide a description of the item so we can update our records"
+                    PTagMissing.CssClass = "shadedErrorBox"
+                End If
+            Else
+
+            End If
+
+
+        Catch ex As Exception
+            System.Diagnostics.Debug.Print("Error filling description: " & ex.ToString())
+            Response.Write("Error Filling Description")
+        End Try
+
+    End Sub
+
+    Protected Sub MoveType_SelectedIndexChanged(ByVal sender As Object, ByVal e As EventArgs)
+        Try
+
+            Dim RowIndex As Integer
+            Dim MoveTypeDDL As DropDownList = sender
+            Dim row As GridViewRow = MoveTypeDDL.Parent.Parent
+            RowIndex = row.RowIndex
+
+
+            Dim ToBuildingDDL As DropDownList = CType(RequestGrid.Rows(RowIndex).FindControl("ddlToBuilding"), DropDownList)
+            Dim RoomNumber As TextBox = CType(RequestGrid.Rows(RowIndex).FindControl("RoomNumber"), TextBox)
+            Dim Custodian As TextBox = CType(RequestGrid.Rows(RowIndex).FindControl("Custodian"), TextBox)
+
+            Dim MoveTypeValue As String = MoveTypeDDL.SelectedValue
+
+            If MoveTypeValue = "Trash/Surplus" Then
+                ToBuildingDDL.SelectedValue = "1"
+                ToBuildingDDL.BackColor = Color.LightGray
+                RoomNumber.Text = ""
+                RoomNumber.BackColor = Color.LightGray
+                RoomNumber.Enabled = False
+                Custodian.Text = ""
+                Custodian.BackColor = Color.LightGray
+                Custodian.Enabled = False
+            End If
+
+        Catch ex As Exception
+            System.Diagnostics.Debug.Print("Error filling description: " & ex.ToString())
+            Response.Write("Error Selecting To Building")
+        End Try
+
+    End Sub
+
+
+    Protected Sub Submit_Button(ByVal sender As Object, ByVal e As EventArgs) Handles Submit.Click
+        PTagMissing.Text = ""
+        PTagMissing.CssClass = ""
+        ErrorHeaderLabel.Text = ""
+        SubmissionErrorLabel.Text = ""
+        SurveyName = SurveyChoice.Text
+        Requestor = RequestedBy.Text
+        PhoneNumber = Phone.Text
+        FromBuilding = ddlFromBuilding.SelectedItem.Text
+        FromBuildingID = ddlFromBuilding.SelectedValue
+        FromRoom = RoomNumber.Text
+        CompletionDt = CompletionDate.Text
+        NotesText = Notes.Text
+        dt = TryCast(ViewState("CurrentTable"), DataTable)
+        Dim JobID As Integer = 0
+
+        'see if user left any fields blank
+        Dim BlankFields As New List(Of String)
+        BlankFields = CheckForBlanks()
+
+        'see if user entered date in the past
+        Dim DateCheck As Boolean
+        DateCheck = PRIForms.checkDates(CompletionDt)
+
+        Dim PhoneCheck As Boolean
+        PhoneCheck = PRIForms.checkPhone(PhoneNumber)
+
+        Dim FoundErrors As Boolean = False
+
+        'Get information on user who requested the work
+        Try
+            Dim RequestorConnStr As String = ConfigurationManager.ConnectionStrings("SnoopyConnStr").ConnectionString
+            Dim ReqConn As New SqlConnection(RequestorConnStr)
+
+            Dim cmd As New SqlCommand
+            Dim dataReader As SqlDataReader
+
+            ReqConn.Open()
+            Dim sqlGetRequestorInfo As String = "SELECT UINNoDash, EMail, EmpID, Name FROM vwStaffNamePurchRequestInfo WHERE (Name = '" & Requestor & "');"
+
+            'put requestor information in shared variables declared up top, so all subs can access it
+            cmd = New SqlCommand(sqlGetRequestorInfo, ReqConn)
+            dataReader = cmd.ExecuteReader()
+            While dataReader.Read()
+                RequestorUIN = dataReader.Item(0)
+                RequestorEmail = dataReader(1)
+                RequestorEmpId = dataReader(2)
+                RequestorFullName = dataReader.Item(3)
+            End While
+        Catch ex As Exception
+            MsgBox("Error: Failed to retrieve submitter information. " & Server.HtmlEncode(ex.ToString()))
+        End Try
+
+        'only do insert if fields are not blank and date is not in the past
+        'otherwise issue error messages and do not proceed with insert
+        If BlankFields.Count() = 0 And DateCheck = True And FoundRowBlanks = False Then
+            'Insert base data for the job into MoveJob table - this is the data that only appears once
+            'per move job - Survey, Requestor, Phone, From Bldg, From Room, Requested Completion Date
+            Try
+                'Insert form info into database
+
+
+                Dim ConnString As String
+                Dim CmdString As String
+
+                If PRIForms.getHost() = "apps.prairie.illinois.edu" Then
+                    ConnString = ConfigurationManager.ConnectionStrings("DatastormConnStr").ConnectionString
+
+                    'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+                    CmdString =
+                        "INSERT INTO Forms.MoveJob" &
+                        "(Survey, RequestedBy, Phone, FromBuilding, BuildingID, FromRoom, RequestedCompletionDate, Notes)" &
+                        "OUTPUT inserted.id " &
+                        "VALUES (@Survey, @Requestor, @Phone, @Building, @BuildingID, @Room, @CompletionDt, @Notes)"
+
+                Else
+                    ConnString = ConfigurationManager.ConnectionStrings("HailConnStr").ConnectionString
+
+                    'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+                    CmdString =
+                        "INSERT INTO dbo.MoveJob" &
+                        "(Survey, RequestedBy, Phone, FromBuilding, BuildingID, FromRoom, RequestedCompletionDate, Notes)" &
+                        "OUTPUT inserted.id " &
+                        "VALUES (@Survey, @Requestor, @Phone, @Building, @BuildingID, @Room, @CompletionDt, @Notes)"
+                End If
+
+                Dim conn As New SqlConnection(ConnString)
+
+                Using cmd As New SqlCommand
+                    cmd.CommandType = CommandType.Text
+                    cmd.Connection = conn
+                    cmd.CommandText = CmdString
+                    cmd.Parameters.AddWithValue("@Survey", SurveyName)
+                    cmd.Parameters.AddWithValue("@Requestor", Requestor)
+                    cmd.Parameters.AddWithValue("@Phone", PhoneNumber)
+                    cmd.Parameters.AddWithValue("@Building", FromBuilding)
+                    cmd.Parameters.AddWithValue("@BuildingID", FromBuildingID)
+                    cmd.Parameters.AddWithValue("@Room", FromRoom)
+                    cmd.Parameters.AddWithValue("@CompletionDt", CompletionDt)
+                    cmd.Parameters.AddWithValue("@Notes", NotesText)
+
+                    conn.Open()
+
+                    Dim reader As SqlDataReader = cmd.ExecuteReader
+                    While reader.Read()
+                        JobID = reader.Item(0)
+                    End While
+
+                    conn.Close()
+                End Using
+
+                'Insert all rows from the RequestGrid into the database with the JobID collected
+                'in job insert statement above
+                For i As Integer = 0 To dt.Rows.Count - 1
+                    Dim MoveTypeControl As DropDownList = RequestGrid.Rows(i).FindControl("ddlMoveType")
+                    Dim MoveType As String = MoveTypeControl.SelectedItem.Text
+                    Dim BuildingControl As DropDownList = RequestGrid.Rows(i).FindControl("ddlToBuilding")
+                    Dim Building As String = BuildingControl.SelectedItem.Text
+                    Dim BuildingID As String = BuildingControl.SelectedValue
+                    Dim CustodianControl As TextBox = RequestGrid.Rows(i).FindControl("Custodian")
+                    Dim Custodian As String = CustodianControl.Text
+                    Dim RoomControl As TextBox = RequestGrid.Rows(i).FindControl("RoomNumber")
+                    Dim Room As String = RoomControl.Text
+                    Dim PTagControl As TextBox = RequestGrid.Rows(i).FindControl("PTag")
+                    Dim PTag As String = PTagControl.Text
+                    Dim SerialControl As TextBox = RequestGrid.Rows(i).FindControl("SerialNumber")
+                    Dim Serial As String = SerialControl.Text
+                    Dim DescriptionControl As TextBox = RequestGrid.Rows(i).FindControl("Description")
+                    Dim Description As String = DescriptionControl.Text
+
+
+                    If PRIForms.getHost() = "apps.prairie.illinois.edu" Then
+                        CmdString =
+                            "INSERT INTO Forms.MoveItems" &
+                            "(JobID, MoveType, ToBuilding, BuildingID, Custodian, ToRoom, PTag, SerialNumber, Description)" &
+                            " VALUES (@JobID, @MoveType, @ToBuilding, @BuildingID, @Custodian, @ToRoom, @PTag, @SerialNumber, @Description)"
+                    Else
+                        CmdString =
+                            "INSERT INTO dbo.MoveItems" &
+                            "(JobID, MoveType, ToBuilding, BuildingID, Custodian, ToRoom, PTag, SerialNumber, Description)" &
+                            " VALUES (@JobID, @MoveType, @ToBuilding, @BuildingID, @Custodian, @ToRoom, @PTag, @SerialNumber, @Description)"
+                    End If
+
+                    Using cmd As New SqlCommand
+                        cmd.CommandType = CommandType.Text
+                        cmd.Connection = conn
+                        cmd.CommandText = CmdString
+                        cmd.Parameters.AddWithValue("@JobID", JobID)
+                        cmd.Parameters.AddWithValue("@MoveType", MoveType)
+                        cmd.Parameters.AddWithValue("@ToBuilding", Building)
+                        cmd.Parameters.AddWithValue("@BuildingID", BuildingID)
+                        cmd.Parameters.AddWithValue("@Custodian", Custodian)
+                        cmd.Parameters.AddWithValue("@ToRoom", Room)
+                        cmd.Parameters.AddWithValue("@PTag", PTag)
+                        cmd.Parameters.AddWithValue("@SerialNumber", Serial)
+                        cmd.Parameters.AddWithValue("@Description", Description)
+
+                        conn.Open()
+
+                        cmd.ExecuteNonQuery()
+
+                        conn.Close()
+
+                    End Using
+                Next
+
+            Catch ex As Exception
+                MsgBox("Error: Work Request submission failed. " & Server.HtmlEncode(ex.ToString()))
+            End Try
+        Else
+            FoundErrors = True
+            ErrorHeaderLabel.Text = "<div class='shadedErrorBox'><h2>"
+            ErrorHeaderLabel.Text += "There are errors in your form, and your request was not submitted. Please correct And resubmit.</h2>"
+        End If
+
+        If BlankFields.Count > 0 Then
+            Dim BlankFieldsString As String
+
+            BlankFieldsString = "<p><b>The following primary information Is required</b></p>"
+            BlankFieldsString += "<ul>"
+            For Each field In BlankFields
+                BlankFieldsString += "<li>" & field & "</li>"
+            Next
+            BlankFieldsString += "</ul>"
+            SubmissionErrorLabel.Text += BlankFieldsString
+        End If
+
+        If PhoneCheck = False Then
+            SubmissionErrorLabel.Text += "<p><b>Your phone number must be 10 digits, including area code, And formatted ###-###-####</b></p>"
+        End If
+
+        If DateCheck = False Then
+            SubmissionErrorLabel.Text += "<p><b>You chose a requested completion date in the past. Please choose a valid date.</b></p>"
+        End If
+
+        If FoundRowBlanks = True Then
+
+            Dim ErrorText As String
+            ErrorText = "<p><b>You are missing one Or more required fields for the items you need moved. Please review And update to match these requirements.</b></p>"
+            ErrorText += "<ul>"
+            ErrorText += "<li>All Rows must have 'Move Type' selected.</li>"
+            ErrorText += "<li>All Rows must have a 'Description' filled in.</li>"
+            ErrorText += "<li>Items being Moved/Transferred (NOT trashed/surplused) require destination building, room,"
+            ErrorText += "and the name of the person responsible for the item after the move.</li>"
+            ErrorText += "<ul>"
+            SubmissionErrorLabel.Text += ErrorText
+        End If
+
+        If FoundErrors Then
+            SubmissionErrorLabel.Text += "</div>"
+        Else
+            PrintConfirmation(sender, e, JobID)
+        End If
+
+    End Sub
+
+    Protected Sub PrintConfirmation(ByVal sender As Object, ByVal e As EventArgs, JobID As Integer)
+        Dim TableString As String
+        Dim EmailString As String = ""
+        Dim Survey As String = ""
+        Dim RequestedBy As String = ""
+        Dim Phone As String = ""
+        Dim FromBuilding As String = ""
+        Dim FromBuildingID As String = ""
+        Dim FromRoom As String = ""
+        Dim CompletionDt As String = ""
+        Dim NotesText As String = ""
+
+        Dim ConnString As String
+        Dim CmdString As String
+
+        If PRIForms.getHost() = "apps.prairie.illinois.edu" Then
+            ConnString = ConfigurationManager.ConnectionStrings("DatastormConnStr").ConnectionString
+
+            'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+            CmdString =
+                        "SELECT id, Survey, RequestedBy, Phone, FromBuilding, BuildingID, FromRoom, RequestedCompletionDate, Notes" &
+                        " FROM Forms.MoveJob WHERE id = " & JobID
+        Else
+            ConnString = ConfigurationManager.ConnectionStrings("HailConnStr").ConnectionString
+
+            'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+            CmdString =
+                        "Select id, Survey, RequestedBy, Phone, FromBuilding, BuildingID, FromRoom, RequestedCompletionDate, Notes" &
+                        " FROM dbo.MoveJob WHERE id = " & JobID
+        End If
+
+        Dim conn As New SqlConnection(ConnString)
+
+        Using cmd As New SqlCommand
+            cmd.CommandType = CommandType.Text
+            cmd.Connection = conn
+            cmd.CommandText = CmdString
+            conn.Open()
+
+            Dim reader As SqlDataReader = cmd.ExecuteReader
+            While reader.Read()
+                JobID = reader.Item(0)
+                Survey = reader.Item(1)
+                RequestedBy = reader.Item(2)
+                Phone = reader.Item(3)
+                FromBuilding = reader.Item(4)
+                FromBuildingID = reader.Item(5)
+                FromRoom = reader.Item(6)
+                CompletionDt = reader.Item(7)
+                NotesText = reader.Item(8)
+
+                EmailString = "<b>Survey: </b>" & Survey & "<br />"
+                EmailString += "<b>Requested By: </b>" & RequestedBy & "<br />"
+                If Phone <> "" Then
+                    EmailString += "<b>Phone: </b>" & Phone & "<br />"
+                Else
+                    EmailString += "<b>Phone: </b> None given <br />"
+                End If
+                If FromBuilding <> "Trash/Surplus" Then
+                    EmailString += "<b>From: </b>" & FromBuildingID & " - " & FromBuilding & ", Room " & FromRoom & "<br /> "
+                Else
+                    EmailString += "<b>From: </b>Surplus<br />"
+                End If
+                EmailString += "<b>Requested Completion Date: </b>" & CompletionDt & " <br /> "
+                EmailString += "<b>Notes: </b>" & NotesText & "<br />"
+            End While
+
+            conn.Close()
+        End Using
+
+
+
+        If PRIForms.getHost() = "apps.prairie.illinois.edu" Then
+            ConnString = ConfigurationManager.ConnectionStrings("DatastormConnStr").ConnectionString
+
+            'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+            CmdString =
+                        "Select MoveType, ToBuilding, BuildingID, ToRoom, Custodian, PTag, SerialNumber, Description" &
+                        " FROM Forms.MoveItems WHERE JobID = " & JobID
+        Else
+            ConnString = ConfigurationManager.ConnectionStrings("HailConnStr").ConnectionString
+
+            'Use output phrase to capture id generated by insert to use for insert into the connected MoveItems table.
+            CmdString =
+                        "Select MoveType, ToBuilding, BuildingID, ToRoom, Custodian, PTag, SerialNumber, Description" &
+                        " FROM dbo.MoveItems WHERE JobID = " & JobID
+        End If
+
+        TableString = "<table Class='confirmationTable'><tr>"
+        TableString += " <th Class='confirmationTableth'> Move Type </th>"
+        TableString += "<th class='confirmationTableth'> To Building </th>"
+        TableString += "<th class='confirmationTableth'> Room </th>"
+        TableString += "<th class='confirmationTableth'> Custodian </th>"
+        TableString += "<th class='confirmationTableth'> PTag </th>"
+        TableString += "<th class='confirmationTableth'> Serial # </th>"
+        TableString += "<th class='confirmationTableth'> Description </th>"
+        TableString += "</tr>"
+
+        EmailString += "<br /><b>Move Items</b><br />------------------------<br />"
+        Using cmd As New SqlCommand
+            cmd.CommandType = CommandType.Text
+            cmd.Connection = conn
+            cmd.CommandText = CmdString
+            conn.Open()
+
+            Dim reader As SqlDataReader = cmd.ExecuteReader
+            While reader.Read()
+                TableString += "<tr class='confirmationTabletr'>"
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(0) & "</td>"
+                If reader.Item(0) = "Trash/Surplus" Then
+                    TableString += "<td class='confirmationTabletd'>" & reader.Item(1) & "</td>"
+                Else
+                    TableString += "<td class='confirmationTabletd'>" & reader.Item(2) & " - " & reader.Item(1) & "</td>"
+                End If
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(3) & "</td>"
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(4) & "</td>"
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(5) & "</td>"
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(6) & "</td>"
+                TableString += "<td class='confirmationTabletd'>" & reader.Item(7) & "</td>"
+                TableString += "</tr>"
+
+
+                EmailString += "<b>Item: </b>" & reader.Item(7) & "<br />"
+                If reader.Item(5) <> "" Then
+                    EmailString += "<b>PTag: </b>" & reader.Item(5) & "<br/>"
+                End If
+                If reader.Item(6) <> "" Then
+                    EmailString += "<b>Serial #: </b>" & reader.Item(6) & "<br />"
+                End If
+                If reader.Item(0) = "Trash/Surplus" Then
+                    EmailString += "<b>To: </b>" & reader.Item(1) & "<br/>"
+                Else
+                    EmailString += "<b>To: </b>" & reader.Item(1) & "(" & reader.Item(2) & ")"
+                    EmailString += ", Room " & reader.Item(3) & "<br />"
+                End If
+                EmailString += "<b>Custodian: </b>" & reader.Item(4)
+                EmailString += "<br />------------<br />"
+            End While
+            conn.Close()
+        End Using
+
+        TableString += "</table>"
+        SubmissionErrorLabel.Text = ""
+        ErrorHeaderLabel.Text = " <div Class='shadedSuccessBox'><div class='confirmationHeader'>Your request has been submitted</div>"
+        SurveyLabel.Text = "<b>Survey:</b> " & Survey & "<br />"
+        RequestedByLabel.Text = "<b>Requested By: </b>" & RequestedBy & "<br />"
+        If PhoneNumber <> "" Then
+            PhoneLabel.Text = "<b>Phone:</b>" & Phone & "<br />"
+        Else
+            PhoneLabel.Text = "<b>Phone:</b> None Provided <br />"
+        End If
+
+        FromLabel.Text = "<b>Move Items from: </b>" & FromBuildingID & " - " & FromBuilding & ", Room " & FromRoom & "<br />"
+        CompletionDateLabel.Text = "<b>Requested Completion Date: </b>" & CompletionDt & "<br />"
+        NotesLabel.Text = "<b>Notes: </b>" & NotesText & "<br /><br />"
+        TableString += "</div>"
+        StaticTable.Controls.Add(New LiteralControl(TableString))
+        SendConfirmationEmail(EmailString)
+        SendProcessingEmail(EmailString)
+        FormEditableContent.Visible = False
+        RestartButton.Visible = True
+
+    End Sub
+
+    Protected Sub SendConfirmationEmail(body As String)
+        Try
+            Using sw As New StringWriter
+                Using hw As New HtmlTextWriter(sw)
+
+                    Dim sr As New StringReader(sw.ToString())
+
+                    Dim mm As New MailMessage()
+
+                    mm.To.Add(RequestorEmail)
+                    mm.From = New MailAddress("tipswor@illinois.edu")
+                    mm.Subject = "Received: Equipment Move Request"
+
+                    'To prevent uofi spam filters from flagging any emails sent
+                    mm.Headers.Add("X-MessageSource", "Prairie Purchase Request")
+
+                    mm.Body = "<h2>We have received your move request</h2>" & body
+
+                    mm.IsBodyHtml = True
+
+                    'Need error handling code for email send failure?
+                    Try
+                        Dim smtp As New SmtpClient()
+                        smtp.Host = "express-smtp.cites.uiuc.edu"
+                        smtp.Send(mm)
+                    Catch ex As Exception
+                        MsgBox("Error: Unable to email work request to PRI. " & Server.HtmlEncode(ex.ToString()))
+                    End Try
+
+                End Using
+            End Using
+        Catch ex As Exception
+            MsgBox("Error Sending PRI Equipment Move Request Confirmation Email - " & Server.HtmlEncode(ex.ToString()))
+        End Try
+
+    End Sub
+
+    Protected Sub SendProcessingEmail(body As String)
+        'on live, send to bob tipsword
+        Try
+            Using sw As New StringWriter
+                Using hw As New HtmlTextWriter(sw)
+
+                    Dim sr As New StringReader(sw.ToString())
+
+                    Dim mm As New MailMessage()
+
+                    mm.To.Add("tipswor@illinois.edu")
+                    mm.From = New MailAddress("tipswor@illinois.edu")
+                    mm.Subject = "Action Required: Equipment Move Request"
+
+                    'To prevent uofi spam filters from flagging any emails sent
+                    mm.Headers.Add("X-MessageSource", "Prairie Purchase Request")
+
+                    mm.Body = "<h2>Equipment Move Request Received</h2>" & body
+
+                    mm.IsBodyHtml = True
+
+                    'Need error handling code for email send failure?
+                    Try
+                        Dim smtp As New SmtpClient()
+                        smtp.Host = "express-smtp.cites.uiuc.edu"
+                        smtp.Send(mm)
+                    Catch ex As Exception
+                        MsgBox("Error: Unable to email work request to PRI. " & Server.HtmlEncode(ex.ToString()))
+                    End Try
+
+                End Using
+            End Using
+        Catch ex As Exception
+            MsgBox("Error Sending PRI Equipment Move Request Confirmation Email - " & Server.HtmlEncode(ex.ToString()))
+        End Try
+    End Sub
+    Protected Sub DeleteRow_Click(ByVal sender As Object, ByVal e As EventArgs)
+
+        Dim delete_button As Button = sender
+        Dim row As GridViewRow = CType(delete_button.NamingContainer, GridViewRow)
+        Dim rowID As Integer = row.RowIndex + 1
+
+
+        If ViewState("CurrentTable") IsNot Nothing Then
+            Dim dt As DataTable = CType(ViewState("CurrentTable"), DataTable)
+
+            If (dt.Rows.Count > 1) Then
+                'Remove the selected row data
+                dt.Rows.Remove(dt.Rows(rowID))
+            End If
+            ViewState("CurrentTable") = dt
+
+            RequestGrid.DataSource = dt
+            RequestGrid.DataBind()
+
+            For i As Integer = 0 To dt.Rows.Count - 1
+                ddlType = CType(RequestGrid.Rows(i).Cells(1).FindControl("ddlMoveType"), DropDownList)
+                ddlType.DataSource = ddlTypelist
+                ddlType.DataBind()
+
+                ddlBuildings = CType(RequestGrid.Rows(i).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+                PRIForms.PopulateBuildingList(ddlBuildings)
+                ddlBuildings.Items.Insert(1, New ListItem("Trash/Surplus", "1"))
+            Next
+        Else
+            Response.Write("ViewState is null in RequestGrid_RowDeleting")
+        End If
+
+        SavePreviousData()
+
+
+    End Sub
+
+    Protected Sub LoadTable(ByVal sender As System.Object, ByVal e As EventArgs)
+        Dim dr As DataRow
+        dr = Nothing
+        dt = New DataTable
+
+        'Create a table with three columns. "Row" column will hold an auto-generated row number.
+        'Other columns will hold text boxes, though we tell them type string here. I don't
+        'understand this completely but it works
+        dt.Columns.Add(New DataColumn("Row", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("MoveType", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("ToBuilding", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("BuildingID", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("ToRoom", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("PTag", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("Description", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("Custodian", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("Delete", Type.GetType("System.String")))
+        dt.Columns.Add(New DataColumn("SerialNumber", Type.GetType("System.String")))
+
+        'set row to 1 -> the number we want to start with for automatic row numbering
+        'set columns that will hold text boxes to empty strings. Why does this work?
+        dr = dt.NewRow()
+        dr("MoveType") = String.Empty
+        dr("ToBuilding") = String.Empty
+        dr("BuildingID") = String.Empty
+        dr("ToRoom") = String.Empty
+        dr("PTag") = String.Empty
+        dr("SerialNumber") = String.Empty
+        dr("Description") = String.Empty
+        dr("Custodian") = String.Empty
+
+        'add the row to the datatable
+        dt.Rows.Add(dr)
+
+        'put the current datatable in the viewstate, to hold info through postback
+        ViewState("CurrentTable") = dt
+
+        'Tell the gridview that the datatable is its source, and bind it
+        RequestGrid.DataSource = dt
+        RequestGrid.DataBind()
+        RequestGrid.Columns(0).Visible = False
+
+        'populate the dropdown list with the data in ddl_list
+        ddlType = CType(RequestGrid.Rows(0).Cells(1).FindControl("ddlMoveType"), DropDownList)
+        ddlType.DataSource = ddlTypelist
+        ddlType.DataBind()
+
+        Dim ddlToBuilding = CType(RequestGrid.Rows(0).Cells(1).FindControl("ddlToBuilding"), DropDownList)
+        PRIForms.PopulateBuildingList(ddlToBuilding)
+        ddlToBuilding.Items.Insert(1, New ListItem("Trash/Surplus", "1"))
+    End Sub
+
+    Protected Sub RequestGrid_RowCreated(sender As Object, e As System.Web.UI.WebControls.GridViewRowEventArgs) Handles RequestGrid.RowCreated
+
+        If e.Row.RowType = DataControlRowType.DataRow Then
+
+            Dim dt As DataTable = CType(ViewState("CurrentTable"), DataTable)
+            Dim lb As Button = CType(e.Row.FindControl("DeleteRow"), Button)
+
+            If lb IsNot Nothing Then
+                If dt.Rows.Count > 1 Then
+                    If e.Row.RowIndex = dt.Rows.Count - 1 Then
+                        lb.Visible = False
+                    End If
+                Else
+                    lb.Visible = False
+                End If
+            End If
+
+        End If
+    End Sub
+    'collects data submitted In form And assigns To Global variables
+    'to be used by all subs And functions
+    Protected Sub getData(ByVal sender As Object, ByVal e As EventArgs)
+        Dim RequestorTextBox As TextBox = TryCast(FindControl("RequestedBy"), TextBox)
+        Requestor = RequestorTextBox.Text
+        SurveyName = SurveyChoice.SelectedItem.Text
+        PhoneNumber = Phone.Text
+        FromBuilding = ddlFromBuilding.SelectedItem.Text
+        FromBuildingID = ddlFromBuilding.SelectedItem.Value
+        FromRoom = RoomNumber.Text
+        CompletionDt = CompletionDate.Text
+        dt = TryCast(ViewState("CurrentTable"), DataTable)
+    End Sub
+
+    Function CheckForBlanks() As List(Of String)
+        Dim EmptyFields As New List(Of String)
+        Dim RequestorTextBox As TextBox = TryCast(FindControl("RequestedBy"), TextBox)
+        Dim HasBlanks As Boolean = False
+        Requestor = RequestorTextBox.Text
+        SurveyName = SurveyChoice.SelectedItem.Text
+        PhoneNumber = Phone.Text
+        FromBuilding = ddlFromBuilding.SelectedItem.Text
+        FromBuildingID = ddlFromBuilding.SelectedItem.Value
+        FromRoom = RoomNumber.Text
+        CompletionDt = CompletionDate.Text
+        dt = TryCast(ViewState("CurrentTable"), DataTable)
+
+        'if any fields are blank, add them to the EmptyFields list
+        'Returns list of field names for printing to page
+
+        If SurveyName = "---Select Survey---" Then
+            EmptyFields.Add("Survey Name")
+        End If
+
+        If Requestor Is Nothing Or Requestor = "" Then
+            EmptyFields.Add("Requested By")
+        End If
+
+        If FromBuilding = "--Select Building--" Then
+            EmptyFields.Add("Building where items will be picked up")
+        End If
+
+        If FromRoom Is Nothing Or FromRoom = "" Then
+            EmptyFields.Add("Room number where items will be picked up")
+        End If
+
+        If CompletionDt Is Nothing Or CompletionDt = "" Then
+            EmptyFields.Add("Requested Completion Date")
+        End If
+
+        For i As Integer = 0 To dt.Rows.Count - 1
+            Dim MoveTypeControl As DropDownList = RequestGrid.Rows(i).FindControl("ddlMoveType")
+            Dim MoveType As String = MoveTypeControl.SelectedItem.Text
+            Dim BuildingControl As DropDownList = RequestGrid.Rows(i).FindControl("ddlToBuilding")
+            Dim Building As String = BuildingControl.SelectedItem.Text
+            Dim RoomControl As TextBox = RequestGrid.Rows(i).FindControl("RoomNumber")
+            Dim Room As String = RoomControl.Text
+            Dim CustodianControl As TextBox = RequestGrid.Rows(i).FindControl("Custodian")
+            Dim Custodian As String = CustodianControl.Text
+            Dim DescriptionControl As TextBox = RequestGrid.Rows(i).FindControl("Description")
+            Dim Description As String = DescriptionControl.Text
+
+
+            If MoveType = "--Select Type--" Then
+                HasBlanks = True
+            ElseIf MoveType = "Move/Transfer" Then
+                If Building = "--Selected Building--" Then
+                    HasBlanks = True
+                End If
+
+                If Room Is Nothing Or Room = "" Then
+                    HasBlanks = True
+                End If
+
+                If Custodian Is Nothing Or Custodian = "" Then
+                    HasBlanks = True
+                End If
+
+                If Description Is Nothing Or Description = "" Then
+                    HasBlanks = True
+                End If
+
+                If HasBlanks Then
+                    FoundRowBlanks = HasBlanks
+                End If
+            End If
+
+        Next
+
+        Return EmptyFields
+
+    End Function
+
+End Class
+
+
+
+
+

@@ -1,0 +1,6 @@
+USE AFODOM_Test
+Go
+
+/*ALTER TABLE dbo.MoveJob DROP COLUMN FromBuilding*/
+ALTER TABLE dbo.MoveJob DROP COlUMN BuildingID
+ALTER TABLE dbo.MoveJob DROP COLUMN FromRoom
